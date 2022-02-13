@@ -1,7 +1,7 @@
 # CSE545_PCTF_PROJECT
 
 
-## [Flag Submission][flag-submit]
+## [Flag Submission](flag-submit)
 
 This tool autoamatically submit flag to for team. Provide either individual flag or file which stores multiple flags for submission.
 Usage:
