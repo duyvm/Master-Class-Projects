@@ -24,7 +24,7 @@ Note: run command below to install setuptools on pctf vm before install librarie
 
 This tool provides firewall protect our services from attacks.
 
-## [Firewall](firewall)
+## [Firewall](onestone-firewall)
 
 This tool automatically finds flags in the target hosts and services.
 
