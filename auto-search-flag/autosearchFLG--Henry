@@ -44,7 +44,11 @@ if __name__ == '__main__':
         targets = api.getTargets(serviceIds)
         for t in targets:
             if t['port']==10001:
-                FLG=api.getFLG(t['hostname'], t['flag_id'])
+                try:
+                    FLG=api.getFLG(t['hostname'], t['flag_id'])
+                except Exception as e:
+                    print(e)
+                    FLG == None
                 if FLG != None:
                     try:
                         #api.submitFlag(FLG)
